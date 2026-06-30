@@ -1,0 +1,27 @@
+small-expression-compiler-flex-bison
+│
+├── README.md
+├── LICENSE
+├── .gitignore
+│
+
+│
+├── src
+│   ├── main.c
+│   ├── lexer.l
+│   ├── parser.y
+│   ├── symbol_table.c
+│   ├── symbol_table.h
+│
+├── generated
+│   ├── lex.yy.c
+│   ├── parser.tab.c
+│   └── parser.tab.h
+│
+├── test
+│   ├── input.txt
+
+│
+├── build
+│
+└── Makefile

@@ -1,1 +1,392 @@
+//lexer.l file
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "symbol_table.h"
+#include "parser.tab.h"
+
+int line_num = 1;
+int lex_errors = 0;
+%}
+
+%option noyywrap
+
+DIGIT     [0-9]
+LETTER    [a-zA-Z_]
+ID        {LETTER}({LETTER}|{DIGIT})*
+INT_NUM   {DIGIT}+
+FLOAT_NUM {DIGIT}+\.{DIGIT}+
+
+%%
+
+"int"    { return INT_KW; }
+"float"  { return FLOAT_KW; }
+"return" { return RETURN_KW; }
+"main"   { return MAIN_KW; }
+"sqrt"   { return SQRT_FUNC; }
+"pow"    { return POW_FUNC; }
+
+{FLOAT_NUM} { yylval.fval = atof(yytext); return FLOAT_LITERAL; }
+{INT_NUM}   { yylval.ival = atoi(yytext); return INT_LITERAL; }
+{ID}        { yylval.sval = strdup(yytext); return IDENTIFIER; }
+
+"+"  { return PLUS; }
+"-"  { return MINUS; }
+"*"  { return STAR; }
+"/"  { return SLASH; }
+"="  { return ASSIGN; }
+"("  { return LPAREN; }
+")"  { return RPAREN; }
+"{"  { return LBRACE; }
+"}"  { return RBRACE; }
+";"  { return SEMICOLON; }
+","  { return COMMA; }
+
+\n       { line_num++; }
+[ \t\r]+ { /* skip */ }
+
+. {
+    fprintf(stderr, "Line %d: Lexical Error - Invalid character '%s'\n", line_num, yytext);
+    lex_errors++;
+}
+
+%%
+
+//EOF
+
+
+//parser.y file
+
+
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "symbol_table.h"
+
+extern int yylex(void);
+extern int line_num;
+extern int lex_errors;
+void yyerror(const char *s);
+void declare(const char *name);
+
+int syntax_errors   = 0;
+int semantic_errors = 0;
+DataType current_decl_type = TYPE_INT;
+%}
+
+%union {
+    int   ival;
+    float fval;
+    char *sval;
+    struct {
+        DataType type;
+        union { int ival; float fval; } val;
+    } expr;
+}
+
+%token <ival>  INT_LITERAL
+%token <fval>  FLOAT_LITERAL
+%token <sval>  IDENTIFIER
+%token INT_KW FLOAT_KW RETURN_KW MAIN_KW SQRT_FUNC POW_FUNC
+%token PLUS MINUS STAR SLASH ASSIGN LPAREN RPAREN LBRACE RBRACE SEMICOLON COMMA
+
+%type <expr> expr term factor unary
+
+%left     PLUS MINUS
+%left     STAR SLASH
+%nonassoc UMINUS
+
+%start program
+%%
+
+program
+    : INT_KW MAIN_KW LPAREN RPAREN { current_scope=SCOPE_LOCAL; }
+      LBRACE stmts RBRACE           { current_scope=SCOPE_GLOBAL; }
+    | stmts
+    ;
+
+stmts
+    : stmts stmt
+    | /* empty */
+    ;
+
+stmt
+    : decl
+    | assign
+    | ret
+    | error SEMICOLON { yyerrok; }
+    ;
+
+decl
+    : INT_KW   { current_decl_type=TYPE_INT;   } id_list SEMICOLON
+    | FLOAT_KW { current_decl_type=TYPE_FLOAT; } id_list SEMICOLON
+    ;
+
+id_list
+    : id_list COMMA IDENTIFIER { declare($3); free($3); }
+    | IDENTIFIER               { declare($1); free($1); }
+    ;
+
+assign
+    : IDENTIFIER ASSIGN expr SEMICOLON {
+        Symbol *s = lookup_symbol(&global_table, $1);
+        if (!s) {
+            fprintf(stderr, "Line %d: Semantic Error - Undeclared variable '%s'\n", line_num, $1);
+            semantic_errors++;
+        } else {
+            if (s->type==TYPE_INT && $3.type==TYPE_FLOAT) {
+                fprintf(stderr, "Line %d: Semantic Error - Type mismatch: float assigned to int '%s'\n", line_num, $1);
+                semantic_errors++;
+                s->value.ival = (int)$3.val.fval;
+            } else if (s->type==TYPE_FLOAT) {
+                s->value.fval = ($3.type==TYPE_FLOAT) ? $3.val.fval : (float)$3.val.ival;
+            } else {
+                s->value.ival = $3.val.ival;
+            }
+            s->initialized = 1;
+            printf("Line %d: %s = ", line_num, $1);
+            if (s->type==TYPE_FLOAT) printf("%.6g\n", s->value.fval);
+            else                     printf("%d\n",    s->value.ival);
+        }
+        free($1);
+    }
+    ;
+
+ret
+    : RETURN_KW expr SEMICOLON {
+        printf("Line %d: return ", line_num);
+        if ($2.type==TYPE_FLOAT) printf("%.6g\n", $2.val.fval);
+        else                     printf("%d\n",   $2.val.ival);
+    }
+    | RETURN_KW SEMICOLON {
+        printf("Line %d: return\n", line_num);
+    }
+    ;
+
+expr
+    : expr PLUS  term {
+        $$.type = ($1.type==TYPE_FLOAT||$3.type==TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
+        if($$.type==TYPE_FLOAT){
+            float a=($1.type==TYPE_FLOAT)?$1.val.fval:(float)$1.val.ival;
+            float b=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+            $$.val.fval=a+b;
+        } else { $$.val.ival=$1.val.ival+$3.val.ival; }
+    }
+    | expr MINUS term {
+        $$.type = ($1.type==TYPE_FLOAT||$3.type==TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
+        if($$.type==TYPE_FLOAT){
+            float a=($1.type==TYPE_FLOAT)?$1.val.fval:(float)$1.val.ival;
+            float b=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+            $$.val.fval=a-b;
+        } else { $$.val.ival=$1.val.ival-$3.val.ival; }
+    }
+    | term { $$=$1; }
+    ;
+
+term
+    : term STAR factor {
+        $$.type = ($1.type==TYPE_FLOAT||$3.type==TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
+        if($$.type==TYPE_FLOAT){
+            float a=($1.type==TYPE_FLOAT)?$1.val.fval:(float)$1.val.ival;
+            float b=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+            $$.val.fval=a*b;
+        } else { $$.val.ival=$1.val.ival*$3.val.ival; }
+    }
+    | term SLASH factor {
+        $$.type = ($1.type==TYPE_FLOAT||$3.type==TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
+        if($$.type==TYPE_FLOAT){
+            float a=($1.type==TYPE_FLOAT)?$1.val.fval:(float)$1.val.ival;
+            float b=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+            if(b==0){ fprintf(stderr,"Line %d: Semantic Error - Division by zero\n",line_num); semantic_errors++; $$.val.fval=0; }
+            else $$.val.fval=a/b;
+        } else {
+            if($3.val.ival==0){ fprintf(stderr,"Line %d: Semantic Error - Division by zero\n",line_num); semantic_errors++; $$.val.ival=0; }
+            else $$.val.ival=$1.val.ival/$3.val.ival;
+        }
+    }
+    | factor { $$=$1; }
+    ;
+
+factor
+    : unary                                  { $$=$1; }
+    | LPAREN expr RPAREN                     { $$=$2; }
+    | SQRT_FUNC LPAREN expr RPAREN {
+        $$.type=TYPE_FLOAT;
+        float a=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+        $$.val.fval=sqrtf(a);
+    }
+    | POW_FUNC LPAREN expr COMMA expr RPAREN {
+        $$.type=TYPE_FLOAT;
+        float a=($3.type==TYPE_FLOAT)?$3.val.fval:(float)$3.val.ival;
+        float b=($5.type==TYPE_FLOAT)?$5.val.fval:(float)$5.val.ival;
+        $$.val.fval=powf(a,b);
+    }
+    ;
+
+unary
+    : INT_LITERAL {
+        $$.type=TYPE_INT;
+        $$.val.ival=$1;
+    }
+    | FLOAT_LITERAL {
+        $$.type=TYPE_FLOAT;
+        $$.val.fval=$1;
+    }
+    | IDENTIFIER {
+        Symbol *s = lookup_symbol(&global_table, $1);
+        if (!s) {
+            fprintf(stderr, "Line %d: Semantic Error - Undeclared variable '%s'\n", line_num, $1);
+            semantic_errors++;
+            $$.type=TYPE_INT; $$.val.ival=0;
+        } else if (!s->initialized) {
+            fprintf(stderr, "Line %d: Semantic Error - Uninitialized variable '%s'\n", line_num, $1);
+            semantic_errors++;
+            $$.type=TYPE_INT; $$.val.ival=0;
+        } else {
+            $$.type=s->type;
+            if(s->type==TYPE_FLOAT) $$.val.fval=s->value.fval;
+            else                    $$.val.ival=s->value.ival;
+        }
+        free($1);
+    }
+    | MINUS unary %prec UMINUS {
+        $$.type=$2.type;
+        if($2.type==TYPE_FLOAT) $$.val.fval=-$2.val.fval;
+        else                    $$.val.ival=-$2.val.ival;
+    }
+    ;
+
+%%
+
+void declare(const char *name) {
+    if (lookup_symbol(&global_table, name)) {
+        fprintf(stderr, "Line %d: Semantic Error - '%s' already declared\n", line_num, name);
+        semantic_errors++;
+    } else {
+        insert_symbol(&global_table, name, current_decl_type, (ScopeType)current_scope);
+    }
+}
+
+void yyerror(const char *s) {
+    fprintf(stderr, "Line %d: Syntax Error - %s\n", line_num, s);
+    syntax_errors++;
+}
+
+
+//EOF
+
+//main.c file
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "symbol_table.h"
+
+extern int yyparse(void);
+extern FILE *yyin;
+extern int line_num;
+extern int lex_errors;
+extern int syntax_errors;
+extern int semantic_errors;
+
+int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <input_file>\n", argv[0]);
+        return 1;
+    }
+
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) {
+        perror("Cannot open file");
+        return 1;
+    }
+
+    init_symbol_table(&global_table);
+    yyin = fp;
+
+    printf("=== Evaluation Results ===\n");
+    yyparse();
+    fclose(fp);
+
+    printf("\n=== Compilation Summary ===\n");
+    printf("  Lexical  Errors: %d\n", lex_errors);
+    printf("  Syntax   Errors: %d\n", syntax_errors);
+    printf("  Semantic Errors: %d\n", semantic_errors);
+    int total = lex_errors + syntax_errors + semantic_errors;
+    printf("  Status: %s\n", total == 0 ? "SUCCESS" : "FAILED");
+
+    print_symbol_table(&global_table);
+    return total > 0 ? 1 : 0;
+}
+
+//EOF
+
+//symbol_table.c file
+
+#include <stdio.h>
+#include <string.h>
+#include "symbol_table.h"
+
+SymbolTable global_table;
+int current_scope = SCOPE_GLOBAL;
+
+void init_symbol_table(SymbolTable *t) {
+    t->count = 0;
+}
+
+int insert_symbol(SymbolTable *t, const char *name, DataType type, ScopeType scope) {
+    int i = t->count++;
+    strncpy(t->symbols[i].name, name, MAX_NAME - 1);
+    t->symbols[i].type        = type;
+    t->symbols[i].scope       = scope;
+    t->symbols[i].initialized = 0;
+    t->symbols[i].value.ival  = 0;
+    return i;
+}
+
+Symbol *lookup_symbol(SymbolTable *t, const char *name) {
+    for (int i = 0; i < t->count; i++)
+        if (strcmp(t->symbols[i].name, name) == 0)
+            return &t->symbols[i];
+    return NULL;
+}
+
+void print_symbol_table(SymbolTable *t) {
+    printf("\n============================================\n");
+    printf("             SYMBOL TABLE\n");
+    printf("============================================\n");
+    printf("%-15s %-8s %-8s %-13s %s\n", "Name","Type","Scope","Initialized","Value");
+    printf("--------------------------------------------\n");
+    for (int i = 0; i < t->count; i++) {
+        Symbol *s = &t->symbols[i];
+        printf("%-15s %-8s %-8s %-13s ",
+               s->name,
+               s->type  == TYPE_INT    ? "int"    : "float",
+               s->scope == SCOPE_LOCAL ? "local"  : "global",
+               s->initialized          ? "yes"    : "no");
+        if (s->initialized) {
+            if (s->type == TYPE_FLOAT) printf("%.6g", s->value.fval);
+            else                       printf("%d",   s->value.ival);
+        } else {
+            printf("(undef)");
+        }
+        printf("\n");
+    }
+    printf("============================================\n");
+}
+
+//EOF
+
+
+//input sample
+
+int main(){
+int a,b;
+a=10+5;
+b=a*2;
+c=b+d;
+return 0;
+}
 
